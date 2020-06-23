@@ -33,6 +33,7 @@ from ..utils import (
     unified_timestamp,
     unsmuggle_url,
     urlencode_postdata,
+    urljoin,
     unescapeHTML,
 )
 
@@ -139,28 +140,28 @@ class VimeoBaseInfoExtractor(InfoExtractor):
             })
 
         # TODO: fix handling of 308 status code returned for live archive manifest requests
+        sep_pattern = r'/sep/video/'
         for files_type in ('hls', 'dash'):
             for cdn_name, cdn_data in config_files.get(files_type, {}).get('cdns', {}).items():
                 manifest_url = cdn_data.get('url')
                 if not manifest_url:
                     continue
                 format_id = '%s-%s' % (files_type, cdn_name)
-                if files_type == 'hls':
-                    formats.extend(self._extract_m3u8_formats(
-                        manifest_url, video_id, 'mp4',
-                        'm3u8' if is_live else 'm3u8_native', m3u8_id=format_id,
-                        note='Downloading %s m3u8 information' % cdn_name,
-                        fatal=False))
-                elif files_type == 'dash':
-                    mpd_pattern = r'/%s/(?:sep/)?video/' % video_id
-                    mpd_manifest_urls = []
-                    if re.search(mpd_pattern, manifest_url):
-                        for suffix, repl in (('', 'video'), ('_sep', 'sep/video')):
-                            mpd_manifest_urls.append((format_id + suffix, re.sub(
-                                mpd_pattern, '/%s/%s/' % (video_id, repl), manifest_url)))
-                    else:
-                        mpd_manifest_urls = [(format_id, manifest_url)]
-                    for f_id, m_url in mpd_manifest_urls:
+                sep_manifest_urls = []
+                if re.search(sep_pattern, manifest_url):
+                    for suffix, repl in (('', 'video'), ('_sep', 'sep/video')):
+                        sep_manifest_urls.append((format_id + suffix, re.sub(
+                            sep_pattern, '/%s/' % repl, manifest_url)))
+                else:
+                    sep_manifest_urls = [(format_id, manifest_url)]
+                for f_id, m_url in sep_manifest_urls:
+                    if files_type == 'hls':
+                        formats.extend(self._extract_m3u8_formats(
+                            m_url, video_id, 'mp4',
+                            'm3u8' if is_live else 'm3u8_native', m3u8_id=f_id,
+                            note='Downloading %s m3u8 information' % cdn_name,
+                            fatal=False))
+                    elif files_type == 'dash':
                         if 'json=1' in m_url:
                             real_m_url = (self._download_json(m_url, video_id, fatal=False) or {}).get('url')
                             if real_m_url:
@@ -169,11 +170,6 @@ class VimeoBaseInfoExtractor(InfoExtractor):
                             m_url.replace('/master.json', '/master.mpd'), video_id, f_id,
                             'Downloading %s MPD information' % cdn_name,
                             fatal=False)
-                        for f in mpd_formats:
-                            if f.get('vcodec') == 'none':
-                                f['preference'] = -50
-                            elif f.get('acodec') == 'none':
-                                f['preference'] = -40
                         formats.extend(mpd_formats)
 
         live_archive = live_event.get('archive') or {}
@@ -185,13 +181,19 @@ class VimeoBaseInfoExtractor(InfoExtractor):
                 'preference': 1,
             })
 
+        for f in formats:
+            if f.get('vcodec') == 'none':
+                f['preference'] = -50
+            elif f.get('acodec') == 'none':
+                f['preference'] = -40
+
         subtitles = {}
         text_tracks = config['request'].get('text_tracks')
         if text_tracks:
             for tt in text_tracks:
                 subtitles[tt['lang']] = [{
                     'ext': 'vtt',
-                    'url': 'https://vimeo.com' + tt['url'],
+                    'url': urljoin('https://vimeo.com', tt['url']),
                 }]
 
         thumbnails = []
@@ -591,7 +593,7 @@ class VimeoIE(VimeoBaseInfoExtractor):
             # Retrieve video webpage to extract further information
             webpage, urlh = self._download_webpage_handle(
                 url, video_id, headers=headers)
-            redirect_url = compat_str(urlh.geturl())
+            redirect_url = urlh.geturl()
         except ExtractorError as ee:
             if isinstance(ee.cause, compat_HTTPError) and ee.cause.code == 403:
                 errmsg = ee.cause.read()
